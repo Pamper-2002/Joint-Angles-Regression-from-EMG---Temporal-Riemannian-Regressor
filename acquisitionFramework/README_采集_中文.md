@@ -147,10 +147,19 @@ D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe main_o3d.py
 
 在仓库根目录执行：
 
+Windows 上请在仓库根目录分别执行以下分组（每条命令是一个独立测试进程）：
+
 ```powershell
-$env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'
-& "D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe" -m pytest -q
+& "D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe" -m pytest acquisitionFramework/tests/test_angle_map.py acquisitionFramework/tests/test_pose_geometry.py -q
+& "D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe" -m pytest acquisitionFramework/tests/test_hand_ik.py -q
+& "D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe" -m pytest acquisitionFramework/tests/test_mediapipe_state.py -q
+& "D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe" -m pytest acquisitionFramework/tests/test_pose_performance.py -q -s
+& "D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe" -m pytest acquisitionFramework/tests/test_pose_pipeline.py -q
+& "D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe" -m pytest acquisitionFramework/tests/test_emg_lifecycle.py -q
 ```
+
+不要把这些分组合并到同一个 pytest 进程；TensorFlow/BrainFlow、Open3D 和 Torch 的 Windows
+原生扩展组合在同进程重复装载时可能直接终止解释器，而不是产生普通的测试失败。
 
 判断卡顿时优先看控制台三项：`capture` 低通常是相机/驱动，`inference` 明显低于 `capture`
 通常是 MediaPipe CPU 推理，`right_pose` 低于 `inference` 则多为画面没有稳定识别到右手。
