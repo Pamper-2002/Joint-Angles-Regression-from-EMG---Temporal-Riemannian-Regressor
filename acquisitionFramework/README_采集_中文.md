@@ -143,6 +143,9 @@ D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe main_o3d.py
   `KeyboardInterrupt`，说明导入阶段被 Ctrl+C 中断。当前入口通过 Solutions-only 适配器
   避免这条未使用的依赖链；可运行 `python -m pytest acquisitionFramework/tests/test_mediapipe_import.py -q`
   检查环境是否仍满足轻量导入约束。
+- Open3D 的桌面蒙皮窗口不需要 Plotly/Jupyter。入口会跳过 `draw_plotly → Dash → IPython`
+  可选依赖链，保留原生 `VisualizerWithKeyCallback`；可运行
+  `python -m pytest acquisitionFramework/tests/test_open3d_import.py -q` 验证。
 - `Network problem, socket error 10060` 是 MindRove 网络/热点超时，不是 MediaPipe 或 IK 的 FPS 错误；
   请检查电脑是否连接手环热点、设备是否休眠以及 `192.168.4.1:4210` 是否可达。
 - 后处理脚本 `numpyToFif.py` / `mne_visualizer.py` 有既有 bug(引用未生成的

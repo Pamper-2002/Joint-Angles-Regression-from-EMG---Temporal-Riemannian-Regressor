@@ -17,8 +17,10 @@
 """
 import numpy as np
 
+from rbcx.handtracker.open3d_import import import_open3d_desktop
+
 try:
-    import open3d as o3d
+    o3d = import_open3d_desktop()
 except ImportError as e:
     raise ImportError("需要安装 open3d: pip install open3d") from e
 
