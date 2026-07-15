@@ -8,7 +8,11 @@ from copy import deepcopy
 
 import cv2
 import numpy as np
-import mediapipe as mp
+
+from rbcx.handtracker.mediapipe_import import import_mediapipe_solutions
+
+
+mp = import_mediapipe_solutions()
 
 
 class MediaPipeHandTracker:
