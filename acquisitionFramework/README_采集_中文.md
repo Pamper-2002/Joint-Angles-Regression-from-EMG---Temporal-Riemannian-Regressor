@@ -62,8 +62,8 @@ D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe main_o3d.py
 
 启动后弹出两个窗口:
 
-- **Open3D 窗口**:显示完整**五指实体手**(21 个关节球 + 21 根指骨圆柱,肉色蒙皮质感),
-  由 MediaPipe 真实 21 个 3D 关键点驱动,可鼠标旋转/缩放视角。首次检测到手时自动对准视角。
+- **Open3D 窗口**:显示 UmeTrack **LBS 连续蒙皮手**。MediaPipe 21 个世界坐标关键点先变换到
+  掌心局部坐标，再由带关节限位和时间先验的 IK 拟合 20 个 UmeTrack 关节弧度，最后经 FK+LBS 驱动网格。
 - **OpenCV RGB 预览窗**:摄像头画面 + 手部骨架 + 20 个关节角度数字(每指的 MCP 显示 屈曲/外展 两个值)。
 
 采集与保存(`config.EMG=True` 时):
@@ -73,8 +73,8 @@ D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe main_o3d.py
   - 输入 **`t`** 回车 → 用已采数据训练 EMG→关节角回归模型(存 `savedModel/`)
 - 退出:关闭 Open3D 窗口 / RGB 窗口按 **ESC** 或 **q** / 控制台 **Ctrl+C**。
 
-> 说明:原版四指 LEAP Hand 入口(main.py + pybullet)已弃用并删除。现改用 MediaPipe 21 点
-> 直接渲染五指实体手,精度更高(直接用真实关键点,无 LEAP 映射的粗糙近似),且新增小指与外展角。
+> 说明:原版四指 LEAP Hand 入口已弃用。视觉主路径不再把几何角直接套到另一套骨骼轴上；
+> 旧的 20 维角度映射仅作为 IK 无法收敛时的兼容回退。
 
 ## 四、保存的数据格式(savedData/)
 
@@ -85,6 +85,7 @@ D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe main_o3d.py
 | `label_ts_data.npy` | (M,) | 每帧角度对应的 EMG 样本索引(同步时间轴,单调递增) |
 | `shown_pred_data.npy` | (M, 20) | 模型预测角度(未加载模型时=当前角度) |
 | `train_times.npy` | (K,) | 触发训练时的帧索引 |
+| `label_schema.json` | JSON | 标签 schema、单位和 20 个关节名称 |
 
 **20 个关节角顺序**(对齐 emg2pose 的 constants.py;FE=屈曲,AA=外展/内收):
 ```
@@ -94,12 +95,13 @@ D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe main_o3d.py
 12 RING_MCP_AA  13 RING_MCP_FE   14 RING_PIP_FE   15 RING_DIP_FE
 16 PINKY_MCP_AA 17 PINKY_MCP_FE  18 PINKY_PIP_FE  19 PINKY_DIP_FE
 ```
-> 相比原版每指多 1 个**外展角(AA)**(手指左右张开),共 5 个。外展角用手掌平面投影几何法计算,
-> 是几何近似(非 emg2pose 原生旋转轴定义),用于本框架自采自训一致即可,不建议与 emg2pose 官方数据集混用。
+> 当前 schema 为 `umetrack20_rad_v1`，单位是**弧度**，关节轴与渲染骨架完全一致。
+> 没有 schema 文件的旧模型按 `mediapipe_geometry20_deg_v1` 处理，并经过修正后的兼容映射；
+> 新旧数据不可直接拼接训练。
 >
 > **注意**:数据格式已从原 15 维升级为 20 维,旧的 15 维 .npy 与新格式不兼容。
 
-**同步原理**:EMG 是 500Hz 密集流,关节角是~30Hz 稀疏标签。每次采集步记录
+**同步原理**:EMG 是 500Hz 密集流,关节角是稀疏标签。每个新的视觉时间戳只记录一次，
 `labelTs = 当前EMG样本总数`,把角度"钉"在 EMG 时间轴的对应位置;训练时线性插值补齐
 (见 `EMG_regression.py` 的 `labelInterpolation`)。
 
@@ -109,6 +111,12 @@ D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe main_o3d.py
 |---|---|---|
 | `EMG` | True | 是否采集 EMG。设 False 可只跑手部追踪+五指手(无需手环,调试用) |
 | `PRELOAD_EMG_MODEL` | False | 是否加载预训练模型做实时预测 |
+| `MEDIAPIPE_MAX_NUM_HANDS` | 1 | 只检测一只手，减少无效推理 |
+| `MEDIAPIPE_MODEL_COMPLEXITY` | 0 | 实时优先的轻量模型 |
+| `HAND_IK_ITERATIONS` | 16 | 每个新姿态的 IK 最大迭代数 |
+| `HAND_IK_CONVERGENCE_RMSE` | 0.08 | 归一化关键点 RMSE 收敛阈值 |
+| `HAND_RENDER_SUBDIVIDE` | 0 | 0 为实时原拓扑；1 为高质量但更耗 CPU |
+| `HAND_RENDER_SMOOTHING` | 0.5 | 按真实时间间隔计算的渲染平滑强度 |
 | `VIRTUAL` / `PHYSICAL` | - | **已废弃**:原 LEAP Hand 开关,main_o3d.py 不再读取(固定用 Open3D 五指手) |
 
 其它 `FREQ_BANDS`/`EMG_WINDOW_*`/`EMG_SEQUENCE_LENGTH` 是 EMG 特征窗口参数(按 500Hz 标定),训练时用。
@@ -118,9 +126,10 @@ D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe main_o3d.py
 
 - MindRove 真机连接,`getEMG()` 返回 (8,1000)@2秒,500Hz ✓
 - 同步采集 → EMG (N,8) + 角度 (M,**20**) + labelTs (M,) 单调递增 ✓
-- MediaPipe 输出 20 关节角(顺序对齐 emg2pose,含 5 个外展角)✓
-- Open3D 五指实体手(21球+21圆柱)实时渲染 + RGB 预览窗共存 ✓
-- 换可视化不影响 EMG 采集与标签(采集逻辑未动)✓
+- MediaPipe 原子发布 21 点、左右手、时间戳；同一帧不会重复求解或重复记录 ✓
+- 掌心局部归一化 + 受约束 UmeTrack IK 输出 20 个 `umetrack20_rad_v1` 关节弧度 ✓
+- Open3D 原拓扑网格就地更新；默认不再每帧细分和重建网格 ✓
+- 控制台分别报告 `capture`、`inference`、`right_pose` FPS；后者才是有效右手姿态率 ✓
 
 > 提示:真机采集前确认 MindRove 已开机、电脑已连设备 WiFi 热点。若报
 > `unable to prepare streaming session`,通常是设备休眠或未连上热点。
@@ -129,5 +138,20 @@ D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe main_o3d.py
 
 - 运行时会有一条 protobuf `GetPrototype() is deprecated` 警告,**无害**,可忽略。
 - TensorFlow 仅在采集导入与 `t` 训练时用到;采集本身默认 CPU,不需要 GPU。
+- `Network problem, socket error 10060` 是 MindRove 网络/热点超时，不是 MediaPipe 或 IK 的 FPS 错误；
+  请检查电脑是否连接手环热点、设备是否休眠以及 `192.168.4.1:4210` 是否可达。
 - 后处理脚本 `numpyToFif.py` / `mne_visualizer.py` 有既有 bug(引用未生成的
   `label_confidence_data.npy`、`name=...` 占位符),需要时再单独修,与采集无关。
+
+## 八、测试与诊断
+
+在仓库根目录执行：
+
+```powershell
+$env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'
+& "D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe" -m pytest -q
+```
+
+判断卡顿时优先看控制台三项：`capture` 低通常是相机/驱动，`inference` 明显低于 `capture`
+通常是 MediaPipe CPU 推理，`right_pose` 低于 `inference` 则多为画面没有稳定识别到右手。
+IK 和渲染只消费**新时间戳**，主循环轮询频率不会被误记成姿态 FPS。

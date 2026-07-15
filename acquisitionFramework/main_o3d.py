@@ -4,10 +4,10 @@
 - 3D 反馈窗渲染的是真正的连续表面蒙皮手(788 顶点),由 20 个关节角经
   UmeTrack 前向运动学 + 线性混合蒙皮驱动,观感接近真实手(见 rbcx/handmodel)。
 - 驱动源解耦且可实时切换:
-    * vision 源:MediaPipe 视觉算出的 20 关节角
+    * vision 源:MediaPipe 21 点经掌心局部对齐与受约束 IK 得到的 UmeTrack 20 角
     * emg    源:EMG 回归模型预测的 20 关节角(EMG_regressor)
-  两条路径共用同一角度映射层(mediapipe 几何角 -> UmeTrack 弧度)与同一 FK/蒙皮/渲染。
-- 保留 MediaPipe 实拍手骨架 + RGB 预览窗;EMG 采集/训练/保存逻辑完全不变。
+  新模型直接输出 UmeTrack 弧度;旧模型才经过兼容映射层。
+- 保留 MediaPipe 实拍手骨架 + RGB 预览窗;标签按 schema 明确记录单位与关节语义。
 
 快捷键(焦点在 3D 窗口时):
     V -> 切到 vision(视觉关节角驱动)
@@ -90,8 +90,8 @@ def _wrist_transform_from_landmarks(lm):
 
 
 def main():
-    # target_fps=60 + MJPG:让关节角采样率跟上 60Hz 摄像头,实时反馈更顺滑。
-    # 若 MediaPipe 在 60fps 下跟不上(实际更新率打印在控制台),可把 model_complexity 降到 0。
+    # target_fps=60 + MJPG 尽量提高采集率；实际 capture/inference/right_pose
+    # 三类吞吐会分别打印，不能把相机标称帧率误当成姿态更新率。
     hand_tracker_mediapipe = MediaPipeHandTracker(
         camera_index=0, mirror=False, show_window=True,
         use_2D_coord_for_angles=True,
@@ -146,7 +146,7 @@ def main():
             hand_state = hand_tracker.get_hand_state("Right")
             vision_state = underlying.get_hand_state("Right")
 
-            # 选择驱动用的 20 个 mediapipe 语义角
+            # vision 由 21 点 IK 求解；emg 根据模型 schema 选择直接弧度或旧版映射。
             use_emg = _source["mode"] == "emg" and config.EMG
             estimate = pose_pipeline.process(vision_state, render=not use_emg)
             if config.EMG:

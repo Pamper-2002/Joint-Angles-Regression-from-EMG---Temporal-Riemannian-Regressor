@@ -1,6 +1,6 @@
-# 已验证可共存的版本组合(Python 3.12 + Windows)
-# 关键:mediapipe 0.10.14 需 protobuf<5,tensorflow 需与之兼容 -> 锁 tensorflow 2.18.1(要求 protobuf<5)
-# tensorflow 2.21 会拉 protobuf>=6,与 mediapipe 硬冲突,切勿升级
+# Windows / Python 3.12 已验证的依赖组合。
+# MediaPipe 0.10.14 要求 protobuf<5；TensorFlow 固定 2.18.1 与其兼容。
+# 不要直接升级到会拉入 protobuf>=6 的 TensorFlow 版本。
 mediapipe==0.10.14
 tensorflow==2.18.1
 pyriemann
@@ -11,9 +11,10 @@ mne
 opencv-python
 mindrove
 numpy<2
-# pybullet 仅用于 Leap Hand 仿真可视化,Windows/py3.12 无预编译 wheel,需 Visual C++ Build Tools 本地编译
-# 见 README_采集.md 的可视化说明
+# PyBullet 仅用于旧版 LEAP Hand 仿真；当前 main_o3d.py 不依赖它。
 pybullet
-# open3d: main_o3d.py 用它实时渲染 MediaPipe 21点五指手(替代四指的 LEAP Hand),有 py3.12 预编译 wheel
+# Open3D + Torch 用于 UmeTrack FK、IK 与 LBS 蒙皮渲染。
 open3d
-torch  # CPU 版: pip install torch --index-url https://download.pytorch.org/whl/cpu (UmeTrack FK+LBS 蒙皮)
+torch
+# 回归与性能验收测试。
+pytest==9.1.1
