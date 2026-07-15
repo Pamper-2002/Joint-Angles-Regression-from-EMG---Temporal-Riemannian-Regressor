@@ -40,6 +40,10 @@ class MediaPipeHandTracker:
         min_tracking_confidence: float = 0.5,
         use_2D_coord_for_angles=True,
         capture_backend=None,
+        target_fps: int = 60,
+        frame_width: int = 640,
+        frame_height: int = 480,
+        use_mjpg: bool = True,
     ):
         self.camera_index = camera_index
         self.window_name = window_name
@@ -51,11 +55,22 @@ class MediaPipeHandTracker:
         self.min_detection_confidence = min_detection_confidence
         self.min_tracking_confidence = min_tracking_confidence
 
-        self.capture_backend = (
-            capture_backend
-            if capture_backend is not None
-            else (cv2.CAP_AVFOUNDATION if platform.system() == "Darwin" else cv2.CAP_ANY)
-        )
+        # 采集帧率/编码/分辨率:关节角采样率上限直接由摄像头实际输出帧率决定。
+        # 很多 USB 摄像头需 MJPG 编码才能达到 60fps(YUY2 常被限到 30)。
+        self.target_fps = int(target_fps)
+        self.frame_width = int(frame_width)
+        self.frame_height = int(frame_height)
+        self.use_mjpg = bool(use_mjpg)
+
+        # Windows 上 MSMF 后端设 fps/编码经常不生效,DSHOW 更可靠;macOS 用 AVFoundation。
+        if capture_backend is not None:
+            self.capture_backend = capture_backend
+        elif platform.system() == "Darwin":
+            self.capture_backend = cv2.CAP_AVFOUNDATION
+        elif platform.system() == "Windows":
+            self.capture_backend = cv2.CAP_DSHOW
+        else:
+            self.capture_backend = cv2.CAP_ANY
 
         self._thread = None
         self._stop = threading.Event()
@@ -64,11 +79,11 @@ class MediaPipeHandTracker:
         self._latest_right_angles = {
             'timestamp': time.time(),
             'angles': {
-                'Thumb_CMC': 0, 'Thumb_MCP': 0, 'Thumb_IP': 0,
-                'Index_MCP': 0, 'Index_PIP': 0, 'Index_DIP': 0,
-                'Middle_MCP': 0, 'Middle_PIP': 0, 'Middle_DIP': 0,
-                'Ring_MCP': 0, 'Ring_PIP': 0, 'Ring_DIP': 0,
-                'Pinky_MCP': 0, 'Pinky_PIP': 0, 'Pinky_DIP': 0
+                'THUMB_CMC_FE': 0, 'THUMB_CMC_AA': 0, 'THUMB_MCP_FE': 0, 'THUMB_IP_FE': 0,
+                'INDEX_MCP_AA': 0, 'INDEX_MCP_FE': 0, 'INDEX_PIP_FE': 0, 'INDEX_DIP_FE': 0,
+                'MIDDLE_MCP_AA': 0, 'MIDDLE_MCP_FE': 0, 'MIDDLE_PIP_FE': 0, 'MIDDLE_DIP_FE': 0,
+                'RING_MCP_AA': 0, 'RING_MCP_FE': 0, 'RING_PIP_FE': 0, 'RING_DIP_FE': 0,
+                'PINKY_MCP_AA': 0, 'PINKY_MCP_FE': 0, 'PINKY_PIP_FE': 0, 'PINKY_DIP_FE': 0,
             },
             'landmarks': None,          # np.ndarray of shape (21, 3)
             'landmarks_type': None      # 'world' or 'normalized'
@@ -76,26 +91,28 @@ class MediaPipeHandTracker:
         self._latest_left_angles = {
             'timestamp': time.time(),
             'angles': {
-                'Thumb_CMC': 0, 'Thumb_MCP': 0, 'Thumb_IP': 0,
-                'Index_MCP': 0, 'Index_PIP': 0, 'Index_DIP': 0,
-                'Middle_MCP': 0, 'Middle_PIP': 0, 'Middle_DIP': 0,
-                'Ring_MCP': 0, 'Ring_PIP': 0, 'Ring_DIP': 0,
-                'Pinky_MCP': 0, 'Pinky_PIP': 0, 'Pinky_DIP': 0
+                'THUMB_CMC_FE': 0, 'THUMB_CMC_AA': 0, 'THUMB_MCP_FE': 0, 'THUMB_IP_FE': 0,
+                'INDEX_MCP_AA': 0, 'INDEX_MCP_FE': 0, 'INDEX_PIP_FE': 0, 'INDEX_DIP_FE': 0,
+                'MIDDLE_MCP_AA': 0, 'MIDDLE_MCP_FE': 0, 'MIDDLE_PIP_FE': 0, 'MIDDLE_DIP_FE': 0,
+                'RING_MCP_AA': 0, 'RING_MCP_FE': 0, 'RING_PIP_FE': 0, 'RING_DIP_FE': 0,
+                'PINKY_MCP_AA': 0, 'PINKY_MCP_FE': 0, 'PINKY_PIP_FE': 0, 'PINKY_DIP_FE': 0,
             },
             'landmarks': None,          # np.ndarray of shape (21, 3)
             'landmarks_type': None      # 'world' or 'normalized'
         }
 
+        # 20 个关节角,严格按 emg2pose constants.py 的顺序(FE=屈曲, AA=外展/内收)
         self.joint_names = [
-            'Thumb_CMC', 'Thumb_MCP', 'Thumb_IP',
-            'Index_MCP', 'Index_PIP', 'Index_DIP',
-            'Middle_MCP', 'Middle_PIP', 'Middle_DIP',
-            'Ring_MCP', 'Ring_PIP', 'Ring_DIP',
-            'Pinky_MCP', 'Pinky_PIP', 'Pinky_DIP'
+            'THUMB_CMC_FE', 'THUMB_CMC_AA', 'THUMB_MCP_FE', 'THUMB_IP_FE',
+            'INDEX_MCP_AA', 'INDEX_MCP_FE', 'INDEX_PIP_FE', 'INDEX_DIP_FE',
+            'MIDDLE_MCP_AA', 'MIDDLE_MCP_FE', 'MIDDLE_PIP_FE', 'MIDDLE_DIP_FE',
+            'RING_MCP_AA', 'RING_MCP_FE', 'RING_PIP_FE', 'RING_DIP_FE',
+            'PINKY_MCP_AA', 'PINKY_MCP_FE', 'PINKY_PIP_FE', 'PINKY_DIP_FE',
         ]
 
         self._latest_frame = None
         self._running = False
+        self.processing_fps = 0.0   # 实际关节角更新率(由处理线程刷新)
         self.use_2D_coord_for_angles = use_2D_coord_for_angles
 
         # New: OpenCV GUI must be managed on the main thread
@@ -170,7 +187,7 @@ class MediaPipeHandTracker:
         Output dict:
             {
                 'timestamp': float,
-                'angles_list': [15 floats],
+                'angles_list': [20 floats],
                 'angles_dict': {...},
                 'landmarks': np.ndarray shape (21, 3) or None,
                 'landmarks_type': 'world' | 'normalized' | None
@@ -242,6 +259,24 @@ class MediaPipeHandTracker:
                     f"Could not open camera index {self.camera_index} with backend {self.capture_backend}"
                 )
 
+            # 提高采集帧率:顺序很关键,须先设编码(FOURCC)再设分辨率/帧率,否则常不生效。
+            if self.use_mjpg:
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
+            cap.set(cv2.CAP_PROP_FPS, self.target_fps)
+            # 减小驱动缓冲,降低延迟(部分后端支持)
+            try:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
+
+            actual_fps = cap.get(cv2.CAP_PROP_FPS)
+            actual_w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+            actual_h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+            print(f"[MediaPipeHandTracker] 摄像头实际: {actual_w:.0f}x{actual_h:.0f} @ {actual_fps:.0f}fps "
+                  f"(目标 {self.target_fps}fps, MJPG={self.use_mjpg})")
+
             mp_hands = mp.solutions.hands
             mp_draw = mp.solutions.drawing_utils
             mp_styles = mp.solutions.drawing_styles
@@ -258,11 +293,24 @@ class MediaPipeHandTracker:
                 # No cv2.namedWindow / cv2.imshow / cv2.waitKey here.
                 # This worker thread only captures/processes frames.
 
+                # 实际处理帧率统计(即关节角/landmarks 的真实更新率)
+                _fps_t0 = time.time()
+                _fps_n = 0
+                self.processing_fps = 0.0
+
                 while not self._stop.is_set():
                     ok, frame_bgr = cap.read()
                     if not ok:
                         time.sleep(0.005)
                         continue
+
+                    _fps_n += 1
+                    _elapsed = time.time() - _fps_t0
+                    if _elapsed >= 2.0:
+                        self.processing_fps = _fps_n / _elapsed
+                        print(f"[MediaPipeHandTracker] 关节角实际更新率 {self.processing_fps:.1f} fps")
+                        _fps_t0 = time.time()
+                        _fps_n = 0
 
                     # Processing is always done on the non-mirrored frame
                     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
@@ -400,28 +448,75 @@ class MediaPipeHandTracker:
         ]
         return world_pts[idx].mean(axis=0)
 
+    @staticmethod
+    def _unit(v, eps=1e-9):
+        v = np.asarray(v, dtype=np.float64)
+        return v / (np.linalg.norm(v) + eps)
+
+    @classmethod
+    def _palm_normal(cls, world_pts, mp_hands):
+        """手掌平面法向量:由 wrist->index_mcp 与 wrist->pinky_mcp 叉乘得到。"""
+        LM = mp_hands.HandLandmark
+        wrist = world_pts[LM.WRIST.value]
+        idx_mcp = world_pts[LM.INDEX_FINGER_MCP.value]
+        pinky_mcp = world_pts[LM.PINKY_MCP.value]
+        return cls._unit(np.cross(idx_mcp - wrist, pinky_mcp - wrist))
+
+    @classmethod
+    def _abduction_angle(cls, world_pts, mp_hands, mcp_idx, ref_vec, palm_n):
+        """
+        外展角(AA):手指近节骨(mcp->pip)投影到手掌平面后,相对参考轴 ref_vec 的带符号夹角(度)。
+        ref_vec 一般取"手掌纵轴"(wrist->middle_mcp)。符号用 palm_n 定向,区分向拇指侧/小指侧张开。
+        """
+        pip_idx = mcp_idx + 1
+        bone = world_pts[pip_idx] - world_pts[mcp_idx]
+        # 投影到手掌平面(去掉法向分量)
+        bone_in_plane = bone - np.dot(bone, palm_n) * palm_n
+        ref_in_plane = ref_vec - np.dot(ref_vec, palm_n) * palm_n
+        bone_u = cls._unit(bone_in_plane)
+        ref_u = cls._unit(ref_in_plane)
+        cos = np.clip(np.dot(bone_u, ref_u), -1.0, 1.0)
+        ang = float(np.degrees(np.arccos(cos)))
+        # 带符号:用叉乘在 palm_n 上的投影定正负
+        sign = np.sign(np.dot(np.cross(ref_u, bone_u), palm_n))
+        return ang * (sign if sign != 0 else 1.0)
+
     @classmethod
     def _compute_joint_angles(cls, world_pts, mp_hands):
+        """
+        计算 20 个关节角(emg2pose 定义):每指 3 个屈曲角(FE) + 1 个外展角(AA)。
+        屈曲角沿用原几何夹角算法;外展角用手掌平面投影法(几何近似)。
+        返回 dict,键与 self.joint_names 一致(顺序无关,取用时按 joint_names 索引)。
+        """
         LM = mp_hands.HandLandmark
         ang = {}
         pc = cls._palm_center(world_pts, mp_hands)
+        palm_n = cls._palm_normal(world_pts, mp_hands)
+        # 手掌纵轴参考:wrist -> middle_mcp
+        ref_axis = world_pts[LM.MIDDLE_FINGER_MCP.value] - world_pts[LM.WRIST.value]
 
+        # ---- 拇指(4 DOF): CMC_FE, CMC_AA, MCP_FE, IP_FE ----
         wrist = LM.WRIST.value
-        th_cmc, th_mcp, th_ip, th_tip = LM.THUMB_CMC.value, LM.THUMB_MCP.value, LM.THUMB_IP.value, LM.THUMB_TIP.value
-        ang['Thumb_CMC'] = cls._angle_3pts(world_pts[wrist], world_pts[th_cmc], world_pts[th_mcp])
-        ang['Thumb_MCP'] = cls._angle_3pts(world_pts[th_cmc], world_pts[th_mcp], world_pts[th_ip])
-        ang['Thumb_IP']  = cls._angle_3pts(world_pts[th_mcp], world_pts[th_ip], world_pts[th_tip])
+        th_cmc, th_mcp, th_ip, th_tip = (LM.THUMB_CMC.value, LM.THUMB_MCP.value,
+                                         LM.THUMB_IP.value, LM.THUMB_TIP.value)
+        ang['THUMB_CMC_FE'] = cls._angle_3pts(world_pts[wrist], world_pts[th_cmc], world_pts[th_mcp])
+        # 拇指 CMC 外展:cmc->mcp 骨段相对手掌纵轴在掌面内的偏角
+        ang['THUMB_CMC_AA'] = cls._abduction_angle(world_pts, mp_hands, th_cmc, ref_axis, palm_n)
+        ang['THUMB_MCP_FE'] = cls._angle_3pts(world_pts[th_cmc], world_pts[th_mcp], world_pts[th_ip])
+        ang['THUMB_IP_FE']  = cls._angle_3pts(world_pts[th_mcp], world_pts[th_ip], world_pts[th_tip])
 
+        # ---- 其余四指(各 4 DOF): MCP_AA, MCP_FE, PIP_FE, DIP_FE ----
         def finger(name, mcp):
             pip, dip, tip = mcp + 1, mcp + 2, mcp + 3
-            ang[f'{name}_MCP'] = cls._angle_3pts(pc, world_pts[mcp], world_pts[pip])
-            ang[f'{name}_PIP'] = cls._angle_3pts(world_pts[mcp], world_pts[pip], world_pts[dip])
-            ang[f'{name}_DIP'] = cls._angle_3pts(world_pts[pip], world_pts[dip], world_pts[tip])
+            ang[f'{name}_MCP_AA'] = cls._abduction_angle(world_pts, mp_hands, mcp, ref_axis, palm_n)
+            ang[f'{name}_MCP_FE'] = cls._angle_3pts(pc, world_pts[mcp], world_pts[pip])
+            ang[f'{name}_PIP_FE'] = cls._angle_3pts(world_pts[mcp], world_pts[pip], world_pts[dip])
+            ang[f'{name}_DIP_FE'] = cls._angle_3pts(world_pts[pip], world_pts[dip], world_pts[tip])
 
-        finger('Index',  LM.INDEX_FINGER_MCP.value)
-        finger('Middle', LM.MIDDLE_FINGER_MCP.value)
-        finger('Ring',   LM.RING_FINGER_MCP.value)
-        finger('Pinky',  LM.PINKY_MCP.value)
+        finger('INDEX',  LM.INDEX_FINGER_MCP.value)
+        finger('MIDDLE', LM.MIDDLE_FINGER_MCP.value)
+        finger('RING',   LM.RING_FINGER_MCP.value)
+        finger('PINKY',  LM.PINKY_MCP.value)
         return ang
 
     @staticmethod
@@ -432,19 +527,19 @@ class MediaPipeHandTracker:
                         (255, 255, 255), 2, cv2.LINE_AA)
 
         LM = mp_hands.HandLandmark
-        put(f'CMC {angles["Thumb_CMC"]:.0f}', LM.THUMB_CMC.value)
-        put(f'MCP {angles["Thumb_MCP"]:.0f}', LM.THUMB_MCP.value)
-        put(f'IP  {angles["Thumb_IP"]:.0f}',  LM.THUMB_IP.value)
+        # 拇指:CMC 屈曲/外展 + MCP + IP
+        put(f'CMC {angles["THUMB_CMC_FE"]:.0f}/{angles["THUMB_CMC_AA"]:.0f}', LM.THUMB_CMC.value)
+        put(f'MCP {angles["THUMB_MCP_FE"]:.0f}', LM.THUMB_MCP.value)
+        put(f'IP  {angles["THUMB_IP_FE"]:.0f}',  LM.THUMB_IP.value)
 
-        for name, base in [('Index', LM.INDEX_FINGER_MCP.value),
-                           ('Middle', LM.MIDDLE_FINGER_MCP.value),
-                           ('Ring',   LM.RING_FINGER_MCP.value),
-                           ('Pinky',  LM.PINKY_FINGER_MCP.value if hasattr(LM, 'PINKY_FINGER_MCP') else LM.PINKY_MCP.value)]:
-            
-            base = base
-            put(f'{name} MCP {angles[f"{name}_MCP"]:.0f}', base)
-            put(f'PIP {angles[f"{name}_PIP"]:.0f}', base + 1)
-            put(f'DIP {angles[f"{name}_DIP"]:.0f}', base + 2)
+        for name, base in [('INDEX', LM.INDEX_FINGER_MCP.value),
+                           ('MIDDLE', LM.MIDDLE_FINGER_MCP.value),
+                           ('RING',   LM.RING_FINGER_MCP.value),
+                           ('PINKY',  LM.PINKY_FINGER_MCP.value if hasattr(LM, 'PINKY_FINGER_MCP') else LM.PINKY_MCP.value)]:
+            # MCP 显示 屈曲/外展 两个角
+            put(f'{name} MCP {angles[f"{name}_MCP_FE"]:.0f}/{angles[f"{name}_MCP_AA"]:.0f}', base)
+            put(f'PIP {angles[f"{name}_PIP_FE"]:.0f}', base + 1)
+            put(f'DIP {angles[f"{name}_DIP_FE"]:.0f}', base + 2)
 
 
 

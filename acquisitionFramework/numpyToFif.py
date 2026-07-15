@@ -17,7 +17,7 @@ dataset = "savedData/" + name
 emg, accel, gyro, label, yts, shownPred, confidence = loadData(dataset)
 trainTime = np.load(f"{dataset}/train_times.npy")
 
-labelForFif = np.zeros((emg.shape[0], 15)) * np.nan
+labelForFif = np.zeros((emg.shape[0], 20)) * np.nan
 labelForFif[yts[yts < len(labelForFif)]] = label[yts < len(labelForFif)]
 
 i = 0
@@ -35,10 +35,16 @@ while i < len(labelForFif):
 
 select = np.logical_not(np.isnan(labelForFif[:, 0]))
 
-# Channel names and types
-ch_names = [f'EMG {i+1}' for i in range(8)] \
-            + [f"Angle {i+1}" for i in range(15)]
-ch_types = ['emg'] * 8 + ["misc"] * 15
+# Channel names and types (20 关节角,顺序同 emg2pose / MediaPipeHandTracker.joint_names)
+ANGLE_NAMES = [
+    'THUMB_CMC_FE', 'THUMB_CMC_AA', 'THUMB_MCP_FE', 'THUMB_IP_FE',
+    'INDEX_MCP_AA', 'INDEX_MCP_FE', 'INDEX_PIP_FE', 'INDEX_DIP_FE',
+    'MIDDLE_MCP_AA', 'MIDDLE_MCP_FE', 'MIDDLE_PIP_FE', 'MIDDLE_DIP_FE',
+    'RING_MCP_AA', 'RING_MCP_FE', 'RING_PIP_FE', 'RING_DIP_FE',
+    'PINKY_MCP_AA', 'PINKY_MCP_FE', 'PINKY_PIP_FE', 'PINKY_DIP_FE',
+]
+ch_names = [f'EMG {i+1}' for i in range(8)] + ANGLE_NAMES
+ch_types = ['emg'] * 8 + ["misc"] * 20
 
 # Create MNE Info structure
 info = mne.create_info(ch_names=ch_names, sfreq=500, ch_types=ch_types)

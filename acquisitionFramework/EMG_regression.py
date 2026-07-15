@@ -33,6 +33,10 @@ EMG_WINDOW_STEP = config.EMG_WINDOW_STEP
 EMG_SEQUENCE_LENGTH = config.EMG_SEQUENCE_LENGTH
 freqBands = config.FREQ_BANDS
 
+# 关节角数量:emg2pose 定义的 20 个(每指 3 屈曲 FE + 1 外展 AA)。
+# 与 MediaPipeHandTracker.joint_names 长度一致。
+N_JOINTS = 20
+
 
 def bandpass_filter(data, sos):
     return sosfilt(sos, data, axis=0)
@@ -57,7 +61,7 @@ def extractSamples(emg, labels, ts):
 
 
 def labelInterpolation(emg, label, yts):
-    labelForFif = np.zeros((emg.shape[0], 15)) * np.nan
+    labelForFif = np.zeros((emg.shape[0], N_JOINTS)) * np.nan
     labelForFif[yts[yts < len(labelForFif)]] = label[yts < len(labelForFif)]
     i = 0
     while i < len(labelForFif):
@@ -111,7 +115,7 @@ def extractFeatures_10fps(emg, label):
 class EMG_regressor:
     def __init__(self, handTracker : MediaPipeHandTracker):
         self.handTracker = handTracker
-        self.pred = np.zeros(15)
+        self.pred = np.zeros(N_JOINTS)
 
         self.stopProgram = False
         self.retrain = False
@@ -132,7 +136,10 @@ class EMG_regressor:
         self.handTracker.show_window = v
 
     def poll_gui(self):
-        self.handTracker.poll_gui()
+        # 必须把底层返回值透传出去:主循环靠它判断是否按了 ESC/q 退出。
+        # 之前漏了 return,导致返回 None,主循环第一圈就把 None 当成“该退出”而 break,
+        # 表现为程序打印 Started 后立即退出、窗口一闪而过。
+        return self.handTracker.poll_gui()
 
     def userInputThread(self):
         time.sleep(10)
@@ -168,7 +175,7 @@ class EMG_regressor:
 
         self.sos = [butter(4, freqBands[i], btype='bandpass', fs=EMG_SFREQ, output='sos') for i in range(len(freqBands))]
 
-        self.scalers = [None] * 15
+        self.scalers = [None] * N_JOINTS
         self.emgScalers = [[None] * EMG_N_CHANNEL for _ in range(len(freqBands))]
         self.cmtsExtractor = [None] * len(freqBands)
 
@@ -222,7 +229,7 @@ class EMG_regressor:
             self.model.invoke()
             pred = self.model.get_tensor(self.output_details[0]['index'])[0]
 
-            for i in range(15):
+            for i in range(N_JOINTS):
                 pred[i] = self.scalers[i].inverse_transform([[pred[i]]])[0][0]
 
         self.pred = pred
@@ -261,7 +268,7 @@ class EMG_regressor:
             x = x.transpose((2, 1, 0))
 
             print(" - scaling samples")
-            for i in range(15):
+            for i in range(N_JOINTS):
                 self.scalers[i] = StandardScaler().fit(y[:, i].reshape(-1, 1))
                 y[:, i] = self.scalers[i].transform(y[:, i].reshape(-1, 1))[:, 0]
 
@@ -272,7 +279,7 @@ class EMG_regressor:
             valX = x[b:]
             valY = y[b:]
 
-            self.model = createRNN(output_dim=15, input_shape=(x.shape[1], x.shape[2]))
+            self.model = createRNN(output_dim=N_JOINTS, input_shape=(x.shape[1], x.shape[2]))
             early_stop = EarlyStopping(
                 monitor='val_loss',
                 patience=10,
