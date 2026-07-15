@@ -137,7 +137,12 @@ D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe main_o3d.py
 ## 七、注意事项
 
 - 运行时会有一条 protobuf `GetPrototype() is deprecated` 警告,**无害**,可忽略。
-- TensorFlow 仅在采集导入与 `t` 训练时用到;采集本身默认 CPU,不需要 GPU。
+- TensorFlow 仅在 `PRELOAD_EMG_MODEL=True` 或按 `t` 训练/转换模型时延迟加载；
+  普通采集启动不再初始化 TensorFlow、MediaPipe Audio Tasks 或 PortAudio。
+- 如果旧日志在 `mediapipe.tasks.python.audio`、`sounddevice` 或 TensorFlow 深层出现
+  `KeyboardInterrupt`，说明导入阶段被 Ctrl+C 中断。当前入口通过 Solutions-only 适配器
+  避免这条未使用的依赖链；可运行 `python -m pytest acquisitionFramework/tests/test_mediapipe_import.py -q`
+  检查环境是否仍满足轻量导入约束。
 - `Network problem, socket error 10060` 是 MindRove 网络/热点超时，不是 MediaPipe 或 IK 的 FPS 错误；
   请检查电脑是否连接手环热点、设备是否休眠以及 `192.168.4.1:4210` 是否可达。
 - 后处理脚本 `numpyToFif.py` / `mne_visualizer.py` 有既有 bug(引用未生成的

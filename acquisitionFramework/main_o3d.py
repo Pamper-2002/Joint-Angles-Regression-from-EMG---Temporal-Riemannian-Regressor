@@ -18,14 +18,13 @@ import os
 import sys
 import time
 
-# 抑制 TensorFlow 冷启动的无关日志(mediapipe 会连锁拉起 TF)。须在任何 TF/mediapipe 导入前设置。
+# 抑制可选 TensorFlow 模型功能的无关日志。须在任何相关导入前设置。
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
-# 启动即时反馈:import mediapipe 会连锁加载 TensorFlow,首次约需 10~15 秒,
-# 期间进程看似“无响应”。这里先明确提示,避免用户误以为卡死而 Ctrl+C 中断
-# (那会在 import 半途抛出 KeyboardInterrupt,产生一长串吓人的 traceback)。
-print("正在加载依赖库(mediapipe / tensorflow 首次导入约需 10~15 秒,请稍候,勿按 Ctrl+C)...",
+# 启动即时反馈:MediaPipe Solutions/Open3D/Torch 冷导入仍需数秒。TensorFlow 已改为
+# 仅在预加载或训练 EMG 模型时延迟加载，不再阻塞普通采集启动。
+print("正在加载手部追踪与渲染依赖（通常约 3~6 秒）...",
       flush=True)
 _t_import = time.time()
 
