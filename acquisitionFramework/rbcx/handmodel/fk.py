@@ -78,6 +78,17 @@ def _identity_wrist() -> torch.Tensor:
     return torch.eye(4, dtype=torch.float32)
 
 
+def landmarks_tensor_from_angles(joint_angles_20: torch.Tensor) -> torch.Tensor:
+    """Differentiable 20-DOF FK returning UmeTrack's 21 landmarks."""
+    hm = load_hand_model()
+    ja = torch.as_tensor(joint_angles_20, dtype=torch.float32).reshape(-1)
+    if ja.numel() < NUM_JOINTS:
+        raise ValueError(f"关节角维度应 >= {NUM_JOINTS}, 实际 {ja.numel()}")
+    pad = torch.zeros(2, dtype=ja.dtype, device=ja.device)
+    wrist = torch.eye(4, dtype=ja.dtype, device=ja.device)
+    return skin_landmarks(hm, torch.cat((ja[:NUM_JOINTS], pad)), wrist_transforms=wrist)
+
+
 @torch.no_grad()
 def landmarks_from_angles(joint_angles_20, wrist_transform: Optional[np.ndarray] = None) -> np.ndarray:
     """20 关节角(弧度) -> (21,3) 关键点。用于标定与几何校验。

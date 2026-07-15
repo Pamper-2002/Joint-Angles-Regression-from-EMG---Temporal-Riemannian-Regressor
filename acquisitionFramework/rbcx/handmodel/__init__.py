@@ -10,6 +10,7 @@
 """
 from .fk import (
     load_hand_model,
+    landmarks_tensor_from_angles,
     landmarks_from_angles,
     mesh_from_angles,
     mesh_triangles,
@@ -18,6 +19,7 @@ from .fk import (
 
 __all__ = [
     "load_hand_model",
+    "landmarks_tensor_from_angles",
     "landmarks_from_angles",
     "mesh_from_angles",
     "mesh_triangles",
