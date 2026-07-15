@@ -33,6 +33,8 @@ import numpy as np
 
 from rbcx.handtracker.mediapipe import MediaPipeHandTracker
 from rbcx.handtracker.hand_mesh_o3d import HandMeshVisualizer
+from rbcx.handtracker.pose_pipeline import PosePipeline
+from rbcx.handmodel.hand_ik import HandIKSolver
 from rbcx.handmodel.angle_map import AngleMapper
 from EMG_regression import EMG_regressor
 import config
@@ -94,6 +96,8 @@ def main():
         camera_index=0, mirror=False, show_window=True,
         use_2D_coord_for_angles=True,
         target_fps=60, frame_width=640, frame_height=480, use_mjpg=True,
+        max_num_hands=config.MEDIAPIPE_MAX_NUM_HANDS,
+        model_complexity=config.MEDIAPIPE_MODEL_COMPLEXITY,
     )
 
     if config.EMG:
@@ -107,8 +111,17 @@ def main():
     if not mapper.calibrated:
         print("[提示] 未找到角度标定参数,使用解析初值。可运行 calibrate_angle_map.py 精修。")
 
-    # subdivide=1 让蒙皮表面柔和(接近图2观感);fixed_wrist=True 固定手腕朝向不翻滚
-    hand3d = HandMeshVisualizer(smoothing=0.5, subdivide=1, fixed_wrist=True)
+    hand3d = HandMeshVisualizer(
+        smoothing=config.HAND_RENDER_SMOOTHING,
+        subdivide=config.HAND_RENDER_SUBDIVIDE,
+        fixed_wrist=True,
+    )
+    solver = HandIKSolver(
+        iterations=config.HAND_IK_ITERATIONS,
+        convergence_rmse=config.HAND_IK_CONVERGENCE_RMSE,
+        legacy_mapper=mapper,
+    )
+    pose_pipeline = PosePipeline(solver, hand3d)
 
     # 注册驱动源切换快捷键
     def _to_vision(vis):
@@ -131,23 +144,15 @@ def main():
             # 推进采集节拍。EMG 模式下 get_hand_state 内部会同步采 EMG+记录视觉角作 label,
             # 并返回 EMG 预测角;纯 MediaPipe 模式返回视觉角。
             hand_state = hand_tracker.get_hand_state("Right")
+            vision_state = underlying.get_hand_state("Right")
 
             # 选择驱动用的 20 个 mediapipe 语义角
             if _source["mode"] == "emg" and config.EMG:
                 mp_angles = np.asarray(hand_state["angles_list"], dtype=np.float64)
+                u_angles = mapper.map(mp_angles)
+                hand3d.update(u_angles, timestamp=vision_state["timestamp"])
             else:
-                mp_angles = np.asarray(underlying.get_mediapipe_angles("Right"), dtype=np.float64)
-
-            # 映射到 UmeTrack 弧度语义
-            u_angles = mapper.map(mp_angles)
-
-            # 全局手腕朝向:仅在非固定朝向模式下才用视觉 landmarks 估计(省开销)
-            wrist_xf = None
-            if not hand3d.fixed_wrist:
-                state = underlying.get_hand_state("Right")
-                wrist_xf = _wrist_transform_from_landmarks(state.get("landmarks", None))
-
-            hand3d.update(u_angles, wrist_transform=wrist_xf)
+                pose_pipeline.process(vision_state)
             if not hand3d.poll():
                 break
 

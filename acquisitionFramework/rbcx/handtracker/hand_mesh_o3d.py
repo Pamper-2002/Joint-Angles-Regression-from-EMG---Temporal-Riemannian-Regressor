@@ -31,7 +31,7 @@ SKIN_COLOR = [0.72, 0.72, 0.74]
 
 class HandMeshVisualizer:
     def __init__(self, window_name="UmeTrack Hand (LBS skinned mesh)",
-                 width=760, height=760, smoothing=0.5, subdivide=1, fixed_wrist=True):
+                 width=760, height=760, smoothing=0.5, subdivide=0, fixed_wrist=True):
         """
         smoothing : 关节角 EMA 平滑系数 alpha(0=不平滑,越大越平滑越滞后)。0.5 折中。
         subdivide : Loop 细分迭代次数。0=原始低模(棱角明显);1=柔和(788->3119 顶点,
@@ -45,6 +45,7 @@ class HandMeshVisualizer:
         self.fixed_wrist = bool(fixed_wrist)
         self._angles_ema = None      # 平滑后的 20 关节角(弧度)
         self._last_angles = np.zeros(20, dtype=np.float32)
+        self._last_timestamp = None
         self._view_fitted = False
 
         load_hand_model()
@@ -106,22 +107,36 @@ class HandMeshVisualizer:
         except Exception:
             pass
 
-    def update(self, joint_angles_20, wrist_transform=None):
+    def _accept_timestamp(self, timestamp):
+        timestamp = float(timestamp)
+        if self._last_timestamp is not None and timestamp <= self._last_timestamp:
+            return False
+        self._last_timestamp = timestamp
+        return True
+
+    def update(self, joint_angles_20, wrist_transform=None, timestamp=None):
         """用 20 个 UmeTrack 语义关节角(弧度)更新蒙皮手。angles 为 None 时保持上一帧。
 
         wrist_transform: 可选 (4,4) 全局手腕朝向仿射。
         """
         if joint_angles_20 is None:
-            return
+            return False
+        if timestamp is None:
+            import time
+            timestamp = time.monotonic()
+        previous_timestamp = self._last_timestamp
+        if not self._accept_timestamp(timestamp):
+            return False
         ja = np.asarray(joint_angles_20, dtype=np.float32).reshape(-1)[:20]
         if ja.shape[0] != 20 or not np.all(np.isfinite(ja)):
-            return
+            return False
 
         # 指数平滑
         if self._angles_ema is None:
             self._angles_ema = ja.copy()
         else:
-            a = self.smoothing
+            dt = max(float(timestamp) - float(previous_timestamp), 1e-4)
+            a = self.smoothing ** (dt * 60.0)
             self._angles_ema = a * self._angles_ema + (1.0 - a) * ja
         self._last_angles = self._angles_ema
 
@@ -129,16 +144,21 @@ class HandMeshVisualizer:
         wxf = None if self.fixed_wrist else wrist_transform
 
         verts, _ = mesh_from_angles(self._angles_ema, wrist_transform=wxf)
-        # 细分是确定性的(同拓扑同迭代数->顶点数/顺序稳定),故可只更新顶点+法线
-        new_mesh = self._build_mesh(verts)
-        self.mesh.vertices = new_mesh.vertices
-        self.mesh.vertex_normals = new_mesh.vertex_normals
+        if self.subdivide == 0:
+            transformed = np.asarray(verts, dtype=np.float64) @ self._base_R.T
+            self.mesh.vertices = o3d.utility.Vector3dVector(transformed)
+            self.mesh.compute_vertex_normals()
+        else:
+            new_mesh = self._build_mesh(verts)
+            self.mesh.vertices = new_mesh.vertices
+            self.mesh.vertex_normals = new_mesh.vertex_normals
         self.vis.update_geometry(self.mesh)
 
         if not self._view_fitted:
             self.vis.reset_view_point(True)
             self._set_view()
             self._view_fitted = True
+        return True
 
     def register_key(self, key: str, callback):
         """注册按键回调(如 'V'/'E' 切换驱动源)。callback 签名 fn(vis)->bool。"""
