@@ -34,8 +34,8 @@ class MediaPipeHandTracker:
         window_name: str = "Hand Tracking",
         mirror: bool = False,
         show_window: bool = True,
-        max_num_hands: int = 2,
-        model_complexity: int = 1,
+        max_num_hands: int = 1,
+        model_complexity: int = 0,
         min_detection_confidence: float = 0.5,
         min_tracking_confidence: float = 0.5,
         use_2D_coord_for_angles=True,
@@ -86,7 +86,10 @@ class MediaPipeHandTracker:
                 'PINKY_MCP_AA': 0, 'PINKY_MCP_FE': 0, 'PINKY_PIP_FE': 0, 'PINKY_DIP_FE': 0,
             },
             'landmarks': None,          # np.ndarray of shape (21, 3)
-            'landmarks_type': None      # 'world' or 'normalized'
+            'landmarks_type': None,     # 'world' or 'normalized'
+            'normalized_landmarks': None,
+            'world_landmarks': None,
+            'handedness': 'Right',
         }
         self._latest_left_angles = {
             'timestamp': time.time(),
@@ -98,7 +101,10 @@ class MediaPipeHandTracker:
                 'PINKY_MCP_AA': 0, 'PINKY_MCP_FE': 0, 'PINKY_PIP_FE': 0, 'PINKY_DIP_FE': 0,
             },
             'landmarks': None,          # np.ndarray of shape (21, 3)
-            'landmarks_type': None      # 'world' or 'normalized'
+            'landmarks_type': None,     # 'world' or 'normalized'
+            'normalized_landmarks': None,
+            'world_landmarks': None,
+            'handedness': 'Left',
         }
 
         # 20 个关节角,严格按 emg2pose constants.py 的顺序(FE=屈曲, AA=外展/内收)
@@ -112,7 +118,10 @@ class MediaPipeHandTracker:
 
         self._latest_frame = None
         self._running = False
-        self.processing_fps = 0.0   # 实际关节角更新率(由处理线程刷新)
+        self.capture_fps = 0.0
+        self.inference_fps = 0.0
+        self.pose_fps = 0.0
+        self.processing_fps = 0.0   # 向后兼容:等于 inference_fps
         self.use_2D_coord_for_angles = use_2D_coord_for_angles
 
         # New: OpenCV GUI must be managed on the main thread
@@ -202,6 +211,15 @@ class MediaPipeHandTracker:
             angles_dict = deepcopy(latest['angles'])
             landmarks = None if latest['landmarks'] is None else deepcopy(latest['landmarks'])
             landmarks_type = latest.get('landmarks_type', None)
+            normalized_landmarks = (
+                None if latest.get('normalized_landmarks') is None
+                else deepcopy(latest['normalized_landmarks'])
+            )
+            world_landmarks = (
+                None if latest.get('world_landmarks') is None
+                else deepcopy(latest['world_landmarks'])
+            )
+            handedness = latest.get('handedness', handeness)
 
         return {
             'timestamp': timestamp,
@@ -209,7 +227,41 @@ class MediaPipeHandTracker:
             'angles_dict': angles_dict,
             'landmarks': landmarks,
             'landmarks_type': landmarks_type,
+            'normalized_landmarks': normalized_landmarks,
+            'world_landmarks': world_landmarks,
+            'handedness': handedness,
         }
+
+    def _select_angle_points(self, normalized_landmarks, world_landmarks):
+        if self.use_2D_coord_for_angles or world_landmarks is None:
+            return normalized_landmarks
+        return world_landmarks
+
+    def _publish_observation(
+        self,
+        handedness,
+        timestamp,
+        angles,
+        normalized_landmarks,
+        world_landmarks,
+    ):
+        preferred = world_landmarks if world_landmarks is not None else normalized_landmarks
+        payload = {
+            'timestamp': float(timestamp),
+            'angles': deepcopy(angles),
+            'landmarks': None if preferred is None else deepcopy(preferred),
+            'landmarks_type': 'world' if world_landmarks is not None else 'normalized',
+            'normalized_landmarks': (
+                None if normalized_landmarks is None else deepcopy(normalized_landmarks)
+            ),
+            'world_landmarks': None if world_landmarks is None else deepcopy(world_landmarks),
+            'handedness': handedness,
+        }
+        with self._lock:
+            if handedness == "Right":
+                self._latest_right_angles = payload
+            elif handedness == "Left":
+                self._latest_left_angles = payload
         
 
     def get_last_frame(self):
@@ -293,9 +345,11 @@ class MediaPipeHandTracker:
                 # No cv2.namedWindow / cv2.imshow / cv2.waitKey here.
                 # This worker thread only captures/processes frames.
 
-                # 实际处理帧率统计(即关节角/landmarks 的真实更新率)
+                # 分开统计采集、推理和成功右手姿态率。
                 _fps_t0 = time.time()
-                _fps_n = 0
+                _capture_n = 0
+                _inference_n = 0
+                _pose_n = 0
                 self.processing_fps = 0.0
 
                 while not self._stop.is_set():
@@ -304,34 +358,44 @@ class MediaPipeHandTracker:
                         time.sleep(0.005)
                         continue
 
-                    _fps_n += 1
+                    _capture_n += 1
                     _elapsed = time.time() - _fps_t0
                     if _elapsed >= 2.0:
-                        self.processing_fps = _fps_n / _elapsed
-                        print(f"[MediaPipeHandTracker] 关节角实际更新率 {self.processing_fps:.1f} fps")
+                        self.capture_fps = _capture_n / _elapsed
+                        self.inference_fps = _inference_n / _elapsed
+                        self.pose_fps = _pose_n / _elapsed
+                        self.processing_fps = self.inference_fps
+                        print(
+                            "[MediaPipeHandTracker] "
+                            f"capture={self.capture_fps:.1f} inference={self.inference_fps:.1f} "
+                            f"right_pose={self.pose_fps:.1f} fps"
+                        )
                         _fps_t0 = time.time()
-                        _fps_n = 0
+                        _capture_n = _inference_n = _pose_n = 0
 
                     # Processing is always done on the non-mirrored frame
                     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
                     rgb.flags.writeable = False
                     results = hands.process(rgb)
+                    _inference_n += 1
                     rgb.flags.writeable = True
 
-                    annotated = frame_bgr.copy()
-                    h, w = annotated.shape[:2]
+                    annotated = frame_bgr.copy() if self.show_window else None
+                    h, w = frame_bgr.shape[:2]
+                    frame_timestamp = time.time()
 
                     hands_out = []
                     if results.multi_hand_landmarks:
                         for i, hand_lms in enumerate(results.multi_hand_landmarks):
                             # Draw skeleton
-                            mp_draw.draw_landmarks(
-                                annotated,
-                                hand_lms,
-                                mp_hands.HAND_CONNECTIONS,
-                                mp_styles.get_default_hand_landmarks_style(),
-                                mp_styles.get_default_hand_connections_style(),
-                            )
+                            if annotated is not None:
+                                mp_draw.draw_landmarks(
+                                    annotated,
+                                    hand_lms,
+                                    mp_hands.HAND_CONNECTIONS,
+                                    mp_styles.get_default_hand_landmarks_style(),
+                                    mp_styles.get_default_hand_connections_style(),
+                                )
 
                             # Normalized image landmarks (always available)
                             normalized_pts = np.array(
@@ -352,20 +416,19 @@ class MediaPipeHandTracker:
                                 world_pts = None
 
                             # Keep the choice for angle computation
-                            angle_pts = normalized_pts if self.use_2D_coord_for_angles else (
-                                world_pts if world_pts is not None else normalized_pts
-                            )
+                            angle_pts = self._select_angle_points(normalized_pts, world_pts)
 
                             # For thumb pinch logic, prefer true world landmarks
                             stored_landmarks = world_pts if world_pts is not None else normalized_pts
                             stored_landmarks_type = 'world' if world_pts is not None else 'normalized'
 
                             # Angles from vectors
-                            angles = self._compute_joint_angles(world_pts, mp_hands)
+                            angles = self._compute_joint_angles(angle_pts, mp_hands)
 
                             # 2D positions for labels
                             pts2d = [(int(p.x * w), int(p.y * h)) for p in hand_lms.landmark]
-                            self._draw_angle_labels(annotated, pts2d, angles, mp_hands)
+                            if annotated is not None:
+                                self._draw_angle_labels(annotated, pts2d, angles, mp_hands)
 
                             # Handedness (swap because processing image is not mirrored)
                             handed = None
@@ -373,42 +436,33 @@ class MediaPipeHandTracker:
                                 label = results.multi_handedness[i].classification[0].label
                                 handed = ('Left' if label == 'Right' else 'Right')
 
-                                wx, wy = pts2d[mp_hands.HandLandmark.WRIST.value]
-                                cv2.putText(
-                                    annotated,
-                                    handed,
-                                    (wx - 20, wy - 20),
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.7,
-                                    (255, 255, 255),
-                                    2,
-                                    cv2.LINE_AA
-                                )
+                                if annotated is not None:
+                                    wx, wy = pts2d[mp_hands.HandLandmark.WRIST.value]
+                                    cv2.putText(
+                                        annotated, handed, (wx - 20, wy - 20),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255),
+                                        2, cv2.LINE_AA,
+                                    )
 
                             hands_out.append({
                                 'handedness': handed,
                                 'angles': angles,
-                                'landmarks': stored_landmarks,
-                                'landmarks_type': stored_landmarks_type,
+                                'normalized_landmarks': normalized_pts,
+                                'world_landmarks': world_pts,
                             })
 
-                    display = cv2.flip(annotated, 1) if self.mirror else annotated
+                    for hand in hands_out:
+                        self._publish_observation(
+                            hand['handedness'], frame_timestamp, hand['angles'],
+                            hand['normalized_landmarks'], hand['world_landmarks'],
+                        )
+                        if hand['handedness'] == "Right":
+                            _pose_n += 1
 
-                    with self._lock:
-                        for hand in hands_out:
-                            payload = {
-                                'timestamp': time.time(),
-                                'angles': deepcopy(hand['angles']),
-                                'landmarks': None if hand['landmarks'] is None else deepcopy(hand['landmarks']),
-                                'landmarks_type': hand['landmarks_type'],
-                            }
-
-                            if hand['handedness'] == "Right":
-                                self._latest_right_angles = payload
-                            elif hand['handedness'] == "Left":
-                                self._latest_left_angles = payload
-
-                        self._latest_frame = display
+                    if annotated is not None:
+                        display = cv2.flip(annotated, 1) if self.mirror else annotated
+                        with self._lock:
+                            self._latest_frame = display
 
         except Exception as exc:
             with self._lock:
