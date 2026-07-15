@@ -72,8 +72,8 @@ _FE_CLOSE = {
 }
 # ---- AA 关节:张开时的基准角(度)。相对它取带符号偏差再缩放。 ----
 _AA_OPEN = {
-    "THUMB_CMC_AA": -25.0, "INDEX_MCP_AA": 18.0, "MIDDLE_MCP_AA": 6.0,
-    "RING_MCP_AA": -6.0, "PINKY_MCP_AA": -18.0,
+    "THUMB_CMC_AA": -25.0, "INDEX_MCP_AA": -18.0, "MIDDLE_MCP_AA": -6.0,
+    "RING_MCP_AA": 6.0, "PINKY_MCP_AA": 18.0,
 }
 _AA_SCALE = 1.0  # mediapipe 外展度 -> UmeTrack 弧度的经验比例(再按 limit 截断)。
                  # 取 1.0 让张开手指更充分分开;真实检测的 AA 幅度通常比几何合成大。
@@ -97,7 +97,8 @@ class AngleMapper:
     def __init__(self, params_path: str = _PARAMS_JSON):
         self.limits = joint_limits()[:NUM_JOINTS].astype(np.float64)  # (20,2)
         self.open_deg, self.close_deg, self.aa_open = _build_anchor_arrays()
-        self.aa_sign = np.ones(NUM_JOINTS, dtype=np.float64)  # AA 方向(标定可翻转)
+        # MediaPipe 的掌面带符号角与 UmeTrack AA 旋转轴方向相反。
+        self.aa_sign = np.where(IS_FE, 1.0, -1.0).astype(np.float64)
         self.aa_scale = np.full(NUM_JOINTS, _AA_SCALE, dtype=np.float64)
         # 可选的标定精修增益(默认恒等):对最终弧度做 gain*u + bias 微调
         self.scale = np.ones(NUM_JOINTS, dtype=np.float64)

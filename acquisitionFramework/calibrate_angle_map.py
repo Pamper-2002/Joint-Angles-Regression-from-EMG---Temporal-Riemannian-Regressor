@@ -28,6 +28,7 @@ from scipy.optimize import least_squares
 from rbcx.handtracker.mediapipe import MediaPipeHandTracker
 from rbcx.handmodel import landmarks_from_angles, joint_limits
 from rbcx.handmodel.angle_map import AngleMapper, JOINT_NAMES, IS_FE, NUM_JOINTS
+from rbcx.handmodel.pose_geometry import canonicalize_mediapipe_landmarks
 
 _CALIB_ANGLES = "savedData/_calib_mp_angles.npy"      # (N,20) mediapipe 角(度)
 _CALIB_LANDMARKS = "savedData/_calib_mp_landmarks.npy"  # (N,21,3) mediapipe world landmarks
@@ -70,12 +71,22 @@ def collect():
     print(f"采集完成:{len(angles)} 帧,已存 {_CALIB_ANGLES} / {_CALIB_LANDMARKS}")
 
 
-def _finger_dir_vectors_mp(lm):
-    """mediapipe landmarks -> 5 指的 (wrist->tip) 单位方向 (5,3)。"""
-    wrist = lm[MP_WRIST]
+def _finger_dir_vectors_mp(lm, reference_landmarks=None):
+    """MediaPipe landmarks -> palm-aligned wrist-to-tip directions."""
+    if reference_landmarks is not None:
+        canonical = canonicalize_mediapipe_landmarks(lm, reference_landmarks, "Right")
+        if not canonical.valid:
+            raise ValueError(f"invalid calibration landmarks: {canonical.reason}")
+        wrist = canonical.landmarks[UME_WRIST]
+        points = canonical.landmarks
+        tips = UME_TIPS
+    else:
+        wrist = lm[MP_WRIST]
+        points = lm
+        tips = MP_TIPS
     dirs = []
-    for tip in MP_TIPS:
-        v = lm[tip] - wrist
+    for tip in tips:
+        v = points[tip] - wrist
         dirs.append(v / (np.linalg.norm(v) + 1e-9))
     return np.array(dirs)
 
@@ -137,7 +148,10 @@ def fit():
     if os.path.exists(_CALIB_LANDMARKS):
         step = max(1, M // 300)
         idx = np.arange(0, M, step)
-        tgt_dirs = np.array([_finger_dir_vectors_mp(mp_lms[j]) for j in idx])  # (K,5,3)
+        reference_landmarks = landmarks_from_angles(np.zeros(NUM_JOINTS))
+        tgt_dirs = np.array([
+            _finger_dir_vectors_mp(mp_lms[j], reference_landmarks) for j in idx
+        ])  # (K,5,3), all in the UmeTrack palm frame
 
         def residuals(aa_scale_scalar):
             m.aa_scale[:] = aa_scale_scalar[0]
