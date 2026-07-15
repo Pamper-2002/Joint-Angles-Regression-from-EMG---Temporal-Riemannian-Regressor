@@ -4,15 +4,10 @@ from pathlib import Path
 from copy import deepcopy
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  # suppress TF Lite delegate / feedback warnings
-print("importing tensorflow ...")
-import tensorflow as tf
-from models import createRNN
-
 from absl import logging as loggingabsl
 loggingabsl.set_verbosity(loggingabsl.ERROR)  # suppress Mediapipe feedback manager logs
 
 import threading
-from keras.src.callbacks import EarlyStopping
 from pyriemann.estimation import Covariances
 from pyriemann.tangentspace import TangentSpace
 from sklearn.pipeline import Pipeline
@@ -28,6 +23,19 @@ from rbcx.handmodel.angle_map import JOINT_NAMES
 
 import logging
 logging.getLogger("data_logger").setLevel(logging.CRITICAL)
+
+
+_TENSORFLOW = None
+
+
+def _load_tensorflow():
+    """Load TensorFlow only for model preload, training, or conversion."""
+    global _TENSORFLOW
+    if _TENSORFLOW is None:
+        print("正在加载 TensorFlow（仅模型功能需要）...", flush=True)
+        import tensorflow as tensorflow
+        _TENSORFLOW = tensorflow
+    return _TENSORFLOW
 
 
 
@@ -234,6 +242,7 @@ class EMG_regressor:
         threadReceiver.start()
 
         if config.PRELOAD_EMG_MODEL:
+            tf = _load_tensorflow()
             self.model = tf.lite.Interpreter(model_path='savedModel/model.tflite')
             self.model.allocate_tensors()
             self.input_details = self.model.get_input_details()
@@ -333,6 +342,10 @@ class EMG_regressor:
             trainY = y[:b]
             valX = x[b:]
             valY = y[b:]
+
+            tf = _load_tensorflow()
+            from models import createRNN
+            from keras.src.callbacks import EarlyStopping
 
             self.model = createRNN(output_dim=N_JOINTS, input_shape=(x.shape[1], x.shape[2]))
             early_stop = EarlyStopping(
