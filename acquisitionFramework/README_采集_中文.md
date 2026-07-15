@@ -113,7 +113,7 @@ D:\Project_CJ\rgb2pose\.venv-emg\Scripts\python.exe main_o3d.py
 | `PRELOAD_EMG_MODEL` | False | 是否加载预训练模型做实时预测 |
 | `MEDIAPIPE_MAX_NUM_HANDS` | 1 | 只检测一只手，减少无效推理 |
 | `MEDIAPIPE_MODEL_COMPLEXITY` | 0 | 实时优先的轻量模型 |
-| `HAND_IK_ITERATIONS` | 5 | 每个新姿态的热启动 IK 迭代数；连续帧继承上一解 |
+| `HAND_IK_ITERATIONS` | 1 | 每个新姿态的阻尼 Gauss–Newton 热启动迭代数 |
 | `HAND_IK_CONVERGENCE_RMSE` | 0.08 | 归一化关键点 RMSE 收敛阈值 |
 | `HAND_RENDER_SUBDIVIDE` | 0 | 0 为实时原拓扑；1 为高质量但更耗 CPU |
 | `HAND_RENDER_SMOOTHING` | 0.5 | 按真实时间间隔计算的渲染平滑强度 |

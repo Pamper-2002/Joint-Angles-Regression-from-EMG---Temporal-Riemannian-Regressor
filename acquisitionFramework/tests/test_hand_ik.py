@@ -37,7 +37,7 @@ def _legal_test_pose():
 
 def test_fk_pose_round_trip_recovers_articulation():
     expected = _legal_test_pose()
-    solver = HandIKSolver(iterations=90, learning_rate=0.06, convergence_rmse=0.02)
+    solver = HandIKSolver(iterations=8, convergence_rmse=0.02)
 
     estimate = solver.solve(_observation_from_angles(expected), timestamp=1.0, handedness="Right")
 

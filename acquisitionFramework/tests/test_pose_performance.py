@@ -37,7 +37,7 @@ def test_realtime_ik_budget_converges_across_video_frames():
     )
     durations = []
     estimates = []
-    for frame in range(8):
+    for frame in range(10):
         started = time.perf_counter()
         estimates.append(solver.solve(_observation(expected), frame + 1.0, "Right"))
         durations.append((time.perf_counter() - started) * 1000.0)
@@ -48,7 +48,7 @@ def test_realtime_ik_budget_converges_across_video_frames():
     )
     print(f"IK median={median_ms:.2f} ms, settled error={median_error_deg:.2f} deg")
 
-    assert median_ms < 45.0
+    assert median_ms < 27.0
     assert any(estimate.converged for estimate in estimates[:3])
     assert median_error_deg < 5.0
 

@@ -10,9 +10,9 @@ PRELOAD_EMG_MODEL = False # load a pretrained EMG->joint Angles model. Models ar
 # Realtime hand-pose pipeline
 MEDIAPIPE_MAX_NUM_HANDS = 1
 MEDIAPIPE_MODEL_COMPLEXITY = 0
-# 每个视频帧做少量热启动迭代；连续帧会继承上一解。5 次在本机约 33--39 ms，
-# 五种代表姿态可在 10 帧内稳定，同时避免 16 次冷算造成约 90 ms 的瓶颈。
-HAND_IK_ITERATIONS = 5
+# 每个视频帧做一次阻尼 Gauss--Newton 热启动迭代；连续帧继承上一解。
+# 本机约 20--25 ms，五种代表姿态可在 10 帧内稳定。
+HAND_IK_ITERATIONS = 1
 HAND_IK_CONVERGENCE_RMSE = 0.08
 HAND_RENDER_SUBDIVIDE = 0  # 0=realtime; 1=quality mode with higher CPU cost
 HAND_RENDER_SMOOTHING = 0.5

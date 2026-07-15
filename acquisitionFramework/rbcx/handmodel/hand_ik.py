@@ -30,8 +30,8 @@ class HandIKSolver:
 
     def __init__(
         self,
-        iterations: int = 24,
-        learning_rate: float = 0.07,
+        iterations: int = 2,
+        damping: float = 1e-2,
         convergence_rmse: float = 0.08,
         temporal_weight: float = 2e-3,
         neutral_weight: float = 2e-5,
@@ -39,7 +39,7 @@ class HandIKSolver:
         legacy_mapper=None,
     ):
         self.iterations = int(iterations)
-        self.learning_rate = float(learning_rate)
+        self.damping = float(damping)
         self.convergence_rmse = float(convergence_rmse)
         self.temporal_weight = float(temporal_weight)
         self.neutral_weight = float(neutral_weight)
@@ -52,6 +52,8 @@ class HandIKSolver:
         self._weights = torch.tensor(
             [2.5] * 5 + [1.0] + [1.5] * 14 + [1.0], dtype=torch.float32
         )
+        self._coordinate_weights = self._weights.repeat_interleave(3).sqrt()
+        self._identity = torch.eye(20, dtype=torch.float32)
         self._palm_width = float(np.linalg.norm(self.reference[8] - self.reference[17]))
         self._last: Optional[PoseEstimate] = None
         self.solve_count = 0
@@ -132,20 +134,32 @@ class HandIKSolver:
         target = torch.from_numpy(canonical.landmarks.astype(np.float32))
         initial_np = self._initial_angles()
         initial = torch.from_numpy(initial_np.copy())
-        q = initial.clone().requires_grad_(True)
-        optimizer = torch.optim.Adam([q], lr=self.learning_rate)
+        q = initial.clone()
+        palm_width_sq = self._palm_width ** 2
 
         for _ in range(max(1, self.iterations)):
-            optimizer.zero_grad(set_to_none=True)
+            q = q.detach().requires_grad_(True)
             fitted = landmarks_tensor_from_angles(q)
-            squared_distance = torch.sum((fitted - target) ** 2, dim=1)
-            position_loss = torch.mean(self._weights * squared_distance) / (self._palm_width ** 2)
-            temporal_loss = self.temporal_weight * torch.mean((q - initial) ** 2)
-            neutral_loss = self.neutral_weight * torch.mean(q ** 2)
-            (position_loss + temporal_loss + neutral_loss).backward()
-            optimizer.step()
+            residual = (target - fitted).reshape(-1)
+            jacobian = torch.autograd.functional.jacobian(
+                landmarks_tensor_from_angles, q, vectorize=True
+            ).reshape(-1, 20)
+            weighted_jacobian = jacobian * self._coordinate_weights[:, None]
+            weighted_residual = residual * self._coordinate_weights
+
+            regularization = (self.damping + self.temporal_weight) * palm_width_sq
+            lhs = weighted_jacobian.T @ weighted_jacobian + regularization * self._identity
+            rhs = weighted_jacobian.T @ weighted_residual
+            rhs -= self.temporal_weight * palm_width_sq * (q.detach() - initial)
+            rhs -= self.neutral_weight * palm_width_sq * q.detach()
+            delta = torch.linalg.solve(lhs, rhs)
             with torch.no_grad():
-                q.clamp_(self._limits_t[:, 0], self._limits_t[:, 1])
+                q = (q + delta).clamp(self._limits_t[:, 0], self._limits_t[:, 1])
+                updated = landmarks_tensor_from_angles(q)
+                current_rmse = torch.sqrt(torch.mean(torch.sum((updated - target) ** 2, dim=1)))
+                current_rmse /= self._palm_width
+            if float(current_rmse) <= self.convergence_rmse:
+                break
 
         angles = q.detach().cpu().numpy().astype(np.float32)
         angles = self._apply_velocity_limit(angles, timestamp)
