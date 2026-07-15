@@ -13,6 +13,7 @@ class MindRoveEMG:
         self.board_shim.start_stream()
         board_id = self.board_shim.get_board_id()
         self.exg_channels = BoardShim.get_exg_channels(board_id)
+        self._stopped = False
 
     def getEMG(self):
         data = self.board_shim.get_board_data()
@@ -27,3 +28,17 @@ class MindRoveEMG:
 
     def clearBuffer(self):
         self.board_shim.get_board_data()
+
+    def stop(self):
+        """Release the streaming session exactly once."""
+        if getattr(self, "_stopped", False):
+            return
+        self._stopped = True
+        try:
+            self.board_shim.stop_stream()
+        except Exception:
+            pass
+        try:
+            self.board_shim.release_session()
+        except Exception:
+            pass

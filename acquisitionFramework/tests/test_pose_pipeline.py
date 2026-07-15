@@ -2,7 +2,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from rbcx.handtracker.hand_mesh_o3d import HandMeshVisualizer
 from rbcx.handtracker.pose_pipeline import PosePipeline
 
 
@@ -57,6 +56,8 @@ def test_pipeline_solves_and_renders_once_per_source_timestamp():
 
 
 def test_renderer_timestamp_gate_rejects_duplicate_and_regressing_time():
+    from rbcx.handtracker.hand_mesh_o3d import HandMeshVisualizer
+
     renderer = HandMeshVisualizer.__new__(HandMeshVisualizer)
     renderer._last_timestamp = None
 
@@ -64,3 +65,15 @@ def test_renderer_timestamp_gate_rejects_duplicate_and_regressing_time():
     assert not renderer._accept_timestamp(2.0)
     assert not renderer._accept_timestamp(1.0)
     assert renderer._accept_timestamp(3.0)
+
+
+def test_pipeline_can_solve_without_rendering_for_emg_label_collection():
+    solver = _Solver()
+    renderer = _Renderer()
+    pipeline = PosePipeline(solver, renderer)
+
+    estimate = pipeline.process(_state(6.0), render=False)
+
+    assert estimate.valid
+    assert solver.solve_count == 1
+    assert renderer.update_count == 0

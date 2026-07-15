@@ -1,4 +1,6 @@
 import os
+import json
+from pathlib import Path
 from copy import deepcopy
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  # suppress TF Lite delegate / feedback warnings
@@ -22,6 +24,7 @@ from joblib import dump, load
 from scipy.signal import butter, sosfilt
 import config
 from EMG import MindRoveEMG, EMG_SFREQ, EMG_N_CHANNEL
+from rbcx.handmodel.angle_map import JOINT_NAMES
 
 import logging
 logging.getLogger("data_logger").setLevel(logging.CRITICAL)
@@ -36,6 +39,23 @@ freqBands = config.FREQ_BANDS
 # 关节角数量:emg2pose 定义的 20 个(每指 3 屈曲 FE + 1 外展 AA)。
 # 与 MediaPipeHandTracker.joint_names 长度一致。
 N_JOINTS = 20
+LABEL_SCHEMA = "umetrack20_rad_v1"
+LEGACY_LABEL_SCHEMA = "mediapipe_geometry20_deg_v1"
+
+
+def write_label_schema(directory="savedData"):
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "label_schema.json"
+    path.write_text(
+        json.dumps(
+            {"schema": LABEL_SCHEMA, "units": "radians", "joint_names": JOINT_NAMES},
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 def bandpass_filter(data, sos):
@@ -126,6 +146,10 @@ class EMG_regressor:
         self.labelTs = []  # times of labels in EMG
         self.trainTimes = []
         self.shownPred = []
+        self._last_pose_timestamp = float("-inf")
+        self.prediction_timestamp = time.time()
+        self.model_output_schema = LABEL_SCHEMA
+        self._stopped = False
 
     @property
     def show_window(self):
@@ -157,15 +181,42 @@ class EMG_regressor:
                     np.save("savedData/label_ts_data.npy", self.labelTs[:sizeLabel])
                     np.save("savedData/shown_pred_data.npy", self.shownPred[:sizeLabel])
                     np.save("savedData/train_times.npy", self.trainTimes)
+                    write_label_schema("savedData")
             else:
                 time.sleep(1)
 
 
     def stop(self):
+        if getattr(self, "_stopped", False):
+            return
+        self._stopped = True
         self.stopProgram = True
+        self.handTracker.stop()
+        if hasattr(self, "mindrove"):
+            self.mindrove.stop()
+
+    def record_pose_estimate(self, estimate):
+        """Append one authoritative UmeTrack-radian label per source timestamp."""
+        if estimate is None or not estimate.valid:
+            return False
+        timestamp = float(estimate.timestamp)
+        if timestamp <= self._last_pose_timestamp:
+            return False
+        angles = np.asarray(estimate.joint_angles, dtype=np.float32).reshape(-1)
+        if angles.shape != (N_JOINTS,) or not np.all(np.isfinite(angles)):
+            return False
+        self.labelTs.append(len(self.emg))
+        self.label.append(angles.copy())
+        if self.model is None:
+            self.pred = angles.copy()
+            self.prediction_timestamp = timestamp
+        self.shownPred.append(np.asarray(self.pred, dtype=np.float32).copy())
+        self._last_pose_timestamp = timestamp
+        return True
 
 
     def start(self):
+        self._stopped = False
         self.handTracker.start()
         self.mindrove = MindRoveEMG()
 
@@ -179,7 +230,7 @@ class EMG_regressor:
         self.emgScalers = [[None] * EMG_N_CHANNEL for _ in range(len(freqBands))]
         self.cmtsExtractor = [None] * len(freqBands)
 
-        threadReceiver = threading.Thread(target=self.userInputThread)
+        threadReceiver = threading.Thread(target=self.userInputThread, daemon=True, name="EMGCommandInput")
         threadReceiver.start()
 
         if config.PRELOAD_EMG_MODEL:
@@ -187,6 +238,15 @@ class EMG_regressor:
             self.model.allocate_tensors()
             self.input_details = self.model.get_input_details()
             self.output_details = self.model.get_output_details()
+            self.model_output_schema = LEGACY_LABEL_SCHEMA
+            schema_path = Path("savedModel/model_schema.json")
+            if schema_path.exists():
+                try:
+                    self.model_output_schema = json.loads(
+                        schema_path.read_text(encoding="utf-8")
+                    )["schema"]
+                except (OSError, KeyError, ValueError, TypeError):
+                    print("[EMG] 模型 schema 无效,按 legacy 角度模型处理。")
 
             self.scalers = np.load("savedModel/labelScaler.npy", allow_pickle=True)
             self.emgScalers = np.load("savedModel/emgScaler.npy", allow_pickle=True)
@@ -196,12 +256,8 @@ class EMG_regressor:
 
     def __step(self):
         data_emg = self.mindrove.getEMG()
-        mediapipe_joints_angles = self.handTracker.get_mediapipe_angles()
-
         self.emg.extend(data_emg.T)
-        self.labelTs.append(len(self.emg))
-        self.label.append(mediapipe_joints_angles)
-        pred = self.label[-1]
+        pred = np.asarray(self.pred, dtype=np.float32).copy()
 
         # angles prediction from EMG
         if self.model is not None and len(self.emg) >= EMG_WINDOW_STEP * EMG_SEQUENCE_LENGTH + EMG_WINDOW_LENGTH + 200:
@@ -233,8 +289,7 @@ class EMG_regressor:
                 pred[i] = self.scalers[i].inverse_transform([[pred[i]]])[0][0]
 
         self.pred = pred
-
-        self.shownPred.append(pred)
+        self.prediction_timestamp = time.time()
 
         # model retraining
         if self.retrain:
@@ -303,6 +358,10 @@ class EMG_regressor:
             tflite_model = converter.convert()
             with open('savedModel/model.tflite', 'wb') as f:
                 f.write(tflite_model)
+            Path("savedModel/model_schema.json").write_text(
+                json.dumps({"schema": LABEL_SCHEMA, "units": "radians"}, indent=2),
+                encoding="utf-8",
+            )
             self.model = tf.lite.Interpreter(model_path='savedModel/model.tflite')
             self.model.allocate_tensors()
             self.input_details = self.model.get_input_details()
@@ -325,4 +384,9 @@ class EMG_regressor:
         if side == "Left":
             return None
         self.__step()
-        return {"angles_list":self.pred, "landmarks":None}
+        return {
+            "timestamp": self.prediction_timestamp,
+            "angles_list": self.pred,
+            "landmarks": None,
+            "schema": self.model_output_schema,
+        }

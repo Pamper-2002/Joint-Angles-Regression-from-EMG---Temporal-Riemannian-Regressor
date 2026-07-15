@@ -10,7 +10,7 @@ class PosePipeline:
         self.last_timestamp = float("-inf")
         self.last_estimate = None
 
-    def process(self, state):
+    def process(self, state, render=True):
         if state is None:
             return self.last_estimate
         timestamp = float(state.get("timestamp", float("-inf")))
@@ -26,7 +26,7 @@ class PosePipeline:
             state.get("handedness", "Right"),
             state.get("angles_list"),
         )
-        if estimate.valid:
+        if estimate.valid and render:
             self.renderer.update(estimate.joint_angles, timestamp=timestamp)
         self.last_timestamp = timestamp
         self.last_estimate = estimate

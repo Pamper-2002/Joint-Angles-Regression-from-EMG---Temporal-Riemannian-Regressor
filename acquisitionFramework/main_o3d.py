@@ -36,7 +36,7 @@ from rbcx.handtracker.hand_mesh_o3d import HandMeshVisualizer
 from rbcx.handtracker.pose_pipeline import PosePipeline
 from rbcx.handmodel.hand_ik import HandIKSolver
 from rbcx.handmodel.angle_map import AngleMapper
-from EMG_regression import EMG_regressor
+from EMG_regression import EMG_regressor, LABEL_SCHEMA
 import config
 
 print(f"依赖库加载完成(耗时 {time.time() - _t_import:.1f}s)。", flush=True)
@@ -147,12 +147,18 @@ def main():
             vision_state = underlying.get_hand_state("Right")
 
             # 选择驱动用的 20 个 mediapipe 语义角
-            if _source["mode"] == "emg" and config.EMG:
-                mp_angles = np.asarray(hand_state["angles_list"], dtype=np.float64)
-                u_angles = mapper.map(mp_angles)
-                hand3d.update(u_angles, timestamp=vision_state["timestamp"])
-            else:
-                pose_pipeline.process(vision_state)
+            use_emg = _source["mode"] == "emg" and config.EMG
+            estimate = pose_pipeline.process(vision_state, render=not use_emg)
+            if config.EMG:
+                hand_tracker.record_pose_estimate(estimate)
+
+            if use_emg:
+                predicted = np.asarray(hand_state["angles_list"], dtype=np.float64)
+                if hand_state.get("schema") == LABEL_SCHEMA:
+                    u_angles = predicted
+                else:
+                    u_angles = mapper.map(predicted)
+                hand3d.update(u_angles, timestamp=hand_state["timestamp"])
             if not hand3d.poll():
                 break
 
